@@ -37,6 +37,11 @@ function clearHistory(key) {
 
 // ---- Gemma 4 Setup (New SDK) ----
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const chat = ai.chats.create({
+  model: "gemma-4-31b-it",  //
+  config: { systemInstruction: SYSTEM_INSTRUCTION },
+  history: history,
+});
 
 const SYSTEM_INSTRUCTION = `คุณคือ Skibidri AI เพื่อการศึกษา ในเซิร์ฟเวอร์ Discord
 อธิบายเนื้อหาวิชาการได้ทุกระดับ ตั้งแต่ประถมถึงมหาวิทยาลัย
