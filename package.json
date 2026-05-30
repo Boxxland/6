@@ -1,0 +1,14 @@
+{
+  "name": "discord-ai-bot",
+  "version": "4.0.0",
+  "description": "Discord Skibidri Bot powered by Gemma 4",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "axios": "^1.7.0",
+    "discord.js": "^14.0.0"
+  }
+}
