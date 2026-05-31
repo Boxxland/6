@@ -44,15 +44,17 @@ const SYSTEM = `คุณคือ Skibidri AI เพื่อการศึก
 ถ้าตอบยาวแบ่งเป็นข้อๆ ถ้าถามว่าคุณคือใคร ให้บอกว่าคือ Skibidri`;
 
 // ---- Discord ----
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.DirectMessageTyping,
+    GatewayIntentBits.DirectMessageReactions,
   ],
 });
-
 client.once("ready", () => {
   console.log(`✅ บอทออนไลน์แล้ว! เข้าสู่ระบบในชื่อ ${client.user.tag}`);
 });
