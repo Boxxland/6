@@ -61,7 +61,7 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   const isMentioned = message.mentions.has(client.user);
-  const isDM = message.channel.type === 1;
+  const isDM = !message.guild;
   const content = message.content.trim();
   const historyKey = isDM ? `dm-${message.author.id}` : `ch-${message.channel.id}`;
 
