@@ -53,8 +53,9 @@ const client = new Client({
     GatewayIntentBits.DirectMessageTyping,
     GatewayIntentBits.DirectMessageReactions,
   ],
-  partials: ["CHANNEL", "MESSAGE"],
+  partials: [Partials.Channel, Partials.Message],
 });
+
 client.once("ready", () => {
   console.log(`✅ บอทออนไลน์แล้ว! เข้าสู่ระบบในชื่อ ${client.user.tag}`);
 });
