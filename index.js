@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, AttachmentBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, AttachmentBuilder, Partials } = require("discord.js");
 const { GoogleGenAI } = require("@google/genai");
 const axios = require("axios");
 const fs = require("fs");
