@@ -4,7 +4,7 @@ const {
   ModalBuilder, TextInputBuilder, TextInputStyle,
   Partials, PermissionFlagsBits,
 } = require("discord.js");
-const { GoogleGenAI } = require("@google/genai");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
@@ -69,7 +69,7 @@ function getSystemPrompt(guildId) {
   return DEFAULT_SYSTEM;
 }
 
-// ─── Panel UI ───────────────────────────────────────────────────────────────
+// ─── Panel UI ───────────────────────────────────────────────────────────
 function buildPanel(guildId) {
   const config = loadConfig();
   const g = config[guildId] || {};
@@ -101,10 +101,10 @@ function buildPanel(guildId) {
   return { embeds: [embed], components: [row1, row2] };
 }
 
-// ─── Gemini Setup ───────────────────────────────────────────────────────────
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// ─── Gemini Setup ────────────────────────────────────────────────────────
+const ai = new GoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// ─── Discord Client ─────────────────────────────────────────────────────────
+// ─── Discord Client ───────────────────────────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -155,7 +155,7 @@ function parseRate(mimeType) {
   return match ? parseInt(match[1]) : 24000;
 }
 
-// ─── Voice Sessions ─────────────────────────────────────────────────────────
+// ─── Voice Sessions ───────────────────────────────────────────────────────
 const voiceSessions = new Map();
 
 async function startVoiceSession(message, voiceChannel) {
@@ -201,11 +201,10 @@ async function startVoiceSession(message, voiceChannel) {
     });
   }
 
-  const voicePrompt = getSystemPrompt(guildId) + "\n\n(โหมดเสียง: ตอบสั้น กระชับ เป็นธรรมชาติ เหมาะกับการพูดคุยด้วยเสียง)";
+  const voicePrompt = getSystemPrompt(guildId) + "\n\n(โหมดเสียง: ตอบสั้น กระชับ เป็นธรรมชาติ เหมาะกับการพูด)";
 
   try {
-    liveSession = await ai.live.connect({
-      model: "gemini-3.1-flash-live-preview",
+    liveSession = await ai.getGenerativeModel({ model: "gemini-2.0-flash-exp" }).live.connect({
       config: {
         responseModalities: ["AUDIO"],
         systemInstruction: voicePrompt,
@@ -324,13 +323,13 @@ client.on("guildCreate", async (guild) => {
   const intro = new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle("👋 สวัสดีครับ! ผม Skibidri")
-    .setDescription("ขอบคุณที่เชิญผมเข้า server นี้ครับ! 🎉\nตั้งค่าบุคลิก/Prompt ของ AI ได้ผ่าน panel ด้านล่างเลย (ปุ่มใช้ได้เฉพาะ Admin) หรือพิมพ์ `!help` เพื่อดูคำสั่งทั้งหมดครับ");
+    .setDescription("ขอบคุณที่เชิญผมเข้า server นี้ครับ! 🎉\nตั้งค่าบุคลิก/Prompt ของ AI ได้ผ่านปุ่มด้านล่าง");
 
   const panel = buildPanel(guild.id);
   await channel.send({ embeds: [intro, ...panel.embeds], components: panel.components });
 });
 
-// ─── Ready ──────────────────────────────────────────────────────────────────
+// ─── Ready ────────────────────────────────────────────────────────────
 client.once("ready", () => {
   console.log(`✅ บอทออนไลน์แล้ว! เข้าสู่ระบบในชื่อ ${client.user.tag}`);
 });
@@ -395,7 +394,7 @@ client.on("interactionCreate", async (interaction) => {
     delete config[interaction.guildId].customPrompt;
     saveConfig(config);
 
-    await interaction.reply({ content: `✅ เปลี่ยนชื่อ AI เป็น **${name}** แล้วครับ! (มีผลกับแชทใหม่และตอนเข้าช่องเสียงครั้งต่อไป)`, ephemeral: true });
+    await interaction.reply({ content: `✅ เปลี่ยนชื่อ AI เป็น **${name}** แล้วครับ! (มีผลกับแชทใหม่)` });
     try { await interaction.message?.edit(buildPanel(interaction.guildId)); } catch {}
   }
 
@@ -408,12 +407,12 @@ client.on("interactionCreate", async (interaction) => {
     config[interaction.guildId].customPrompt = text;
     saveConfig(config);
 
-    await interaction.reply({ content: "✅ ตั้งค่า Prompt ใหม่สำเร็จ! (มีผลกับแชทใหม่และการเข้าช่องเสียงครั้งต่อไป)", ephemeral: true });
+    await interaction.reply({ content: "✅ ตั้งค่า Prompt ใหม่สำเร็จ! (มีผลกับแชทใหม่)" });
     try { await interaction.message?.edit(buildPanel(interaction.guildId)); } catch {}
   }
 });
 
-// ─── Messages ───────────────────────────────────────────────────────────────
+// ─── Messages ───────────────────────────────────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
@@ -501,14 +500,14 @@ client.on("messageCreate", async (message) => {
     await message.channel.sendTyping();
 
     const history = getHistory(historyKey);
-    const chat = ai.chats.create({
-      model: "gemma-4-31b-it",
-      config: { systemInstruction: getSystemPrompt(message.guild?.id) },
+    const chat = ai.startChat({
+      model: "gemini-2.0-flash-exp",
+      systemInstruction: getSystemPrompt(message.guild?.id),
       history,
     });
 
-    const response = await chat.sendMessage({ message: userMessage });
-    const replyText = response.text;
+    const response = await chat.sendMessage(userMessage);
+    const replyText = response.response.text();
 
     saveMessage(historyKey, "user", userMessage);
     saveMessage(historyKey, "model", replyText);
