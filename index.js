@@ -101,10 +101,10 @@ function buildPanel(guildId) {
   return { embeds: [embed], components: [row1, row2] };
 }
 
-// ─── Gemini Setup ────────────────────────────────────────────────────────
+// ─── Gemini Setup ──────────────────────────────────────────────────────────
 const ai = new GoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// ─── Discord Client ───────────────────────────────────────────────────────
+// ─── Discord Client ─────────────────────────────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -155,7 +155,7 @@ function parseRate(mimeType) {
   return match ? parseInt(match[1]) : 24000;
 }
 
-// ─── Voice Sessions ───────────────────────────────────────────────────────
+// ─── Voice Sessions ─────────────────────────────────────────────────────────
 const voiceSessions = new Map();
 
 async function startVoiceSession(message, voiceChannel) {
@@ -412,7 +412,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ─── Messages ───────────────────────────────────────────────────────────
+// ─── Messages ────────────────────────────────────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
