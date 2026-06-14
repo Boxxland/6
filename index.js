@@ -155,7 +155,7 @@ function parseRate(mimeType) {
   return match ? parseInt(match[1]) : 24000;
 }
 
-// ─── Voice Sessions ─────────────────────────────────────────────────────────
+// ─── Voice Sessions ─────────────────────────────────────────────���───────────
 const voiceSessions = new Map();
 
 async function startVoiceSession(message, voiceChannel) {
@@ -501,7 +501,7 @@ client.on("messageCreate", async (message) => {
 
     const history = getHistory(historyKey);
     const chat = ai.startChat({
-      model: "gemini-3-5-live",
+      model: "gemma-4-31b-it",
       systemInstruction: getSystemPrompt(message.guild?.id),
       history,
     });
