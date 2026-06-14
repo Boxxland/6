@@ -204,7 +204,7 @@ async function startVoiceSession(message, voiceChannel) {
   const voicePrompt = getSystemPrompt(guildId) + "\n\n(โหมดเสียง: ตอบสั้น กระชับ เป็นธรรมชาติ เหมาะกับการพูด)";
 
   try {
-    liveSession = await ai.getGenerativeModel({ model: "gemini-2.0-flash-exp" }).live.connect({
+    liveSession = await ai.getGenerativeModel({ model: "gemini-3-5-live" }).live.connect({
       config: {
         responseModalities: ["AUDIO"],
         systemInstruction: voicePrompt,
@@ -501,7 +501,7 @@ client.on("messageCreate", async (message) => {
 
     const history = getHistory(historyKey);
     const chat = ai.startChat({
-      model: "gemini-2.0-flash-exp",
+      model: "gemini-3-5-live",
       systemInstruction: getSystemPrompt(message.guild?.id),
       history,
     });
