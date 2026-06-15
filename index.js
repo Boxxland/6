@@ -462,7 +462,7 @@ client.on("interactionCreate", async (interaction) => {
       const prompt = interaction.options.getString("prompt");
       try {
         const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash-image",
+          model: "gemini-2.5-flash-lite",
           contents: prompt,
           config: {
             responseModalities: ["TEXT", "IMAGE"],
