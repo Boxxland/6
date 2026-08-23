@@ -568,23 +568,32 @@ client.on("interactionCreate", async (interaction) => {
       try {
         // 1. ส่ง request สร้างรูป
         const createRes = await axios.post(
-          "https://api.bfl.ml/v1/flux-pro-1.1",
+          "https://api.bfl.ai/v1/flux-pro-1.1",
           { prompt, width: 1024, height: 1024 },
           { headers: { "x-key": process.env.BFL_API_KEY, "Content-Type": "application/json" } }
         );
-        const taskId = createRes.data.id;
-        if (!taskId) return interaction.editReply("❌ สร้างรูปไม่สำเร็จ ลองใหม่ครับ");
+        const { id: taskId, polling_url: pollingUrl } = createRes.data;
+        if (!taskId || !pollingUrl) return interaction.editReply("❌ สร้างรูปไม่สำเร็จ ลองใหม่ครับ");
 
-        // 2. รอ poll จนรูปพร้อม (timeout 60s)
+        // 2. รอ poll จนรูปพร้อม (timeout ~60s) — ใช้ polling_url ที่ได้มาตรงๆ ห้ามสร้าง URL เอง
         let imageUrl = null;
-        for (let i = 0; i < 30; i++) {
-          await new Promise((r) => setTimeout(r, 2000));
-          const pollRes = await axios.get(`https://api.bfl.ml/v1/get_result?id=${taskId}`, {
+        let failReason = null;
+        for (let i = 0; i < 120; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+          const pollRes = await axios.get(pollingUrl, {
             headers: { "x-key": process.env.BFL_API_KEY }
           });
-          if (pollRes.data.status === "Ready") { imageUrl = pollRes.data.result?.sample; break; }
-          if (pollRes.data.status === "Error") break;
+          const status = pollRes.data.status;
+          if (status === "Ready") { imageUrl = pollRes.data.result?.sample; break; }
+          if (["Error", "Failed", "Request Moderated", "Content Moderated"].includes(status)) {
+            failReason = status;
+            break;
+          }
         }
+        if (failReason === "Request Moderated" || failReason === "Content Moderated") {
+          return interaction.editReply("🚫 prompt นี้โดน moderate ครับ ลองเปลี่ยนคำอธิบายใหม่");
+        }
+        if (failReason) return interaction.editReply(`❌ สร้างรูปไม่สำเร็จ (${failReason})`);
         if (!imageUrl) return interaction.editReply("❌ สร้างรูปนานเกินไป ลองใหม่ครับ");
 
         // 3. ดาวน์โหลดและส่งรูป
