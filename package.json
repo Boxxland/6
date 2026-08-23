@@ -1,16 +1,19 @@
 {
-  "name": "skibidri-bot",
-  "version": "5.0.0",
-  "description": "Discord Skibidri Bot - Gemma chat + Gemini Live voice + custom prompt panel",
-  "main": "index.js",
-  "scripts": { "start": "node index.js" },
+  "name": "skibidri-ai",
+  "version": "1.0.0",
+  "description": "Skibidri AI — Discord bot: chat/multimodal (Gemini), image gen (Flux Pro), voice (Gemini Live), PDF export",
+  "main": "Skibidri.js",
+  "scripts": {
+    "start": "node Skibidri.js"
+  },
   "dependencies": {
+    "discord.js": "^14.16.3",
     "@discordjs/voice": "^0.17.0",
-    "@google/genai": "^1.0.0",
-    "axios": "^1.7.0",
-    "discord.js": "^14.0.0",
-    "opusscript": "^0.1.1",
+    "@discordjs/opus": "^0.9.0",
+    "libsodium-wrappers": "^0.7.15",
     "prism-media": "^1.3.5",
-    "tweetnacl": "^1.0.3"
+    "@google/genai": "^2.18.0",
+    "axios": "^1.7.7",
+    "pdfkit": "^0.15.1"
   }
 }
