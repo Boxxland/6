@@ -9,6 +9,7 @@ const { GoogleGenAI } = require("@google/genai");
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
+const PDFDocument = require("pdfkit");
 const { PassThrough } = require("stream");
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
@@ -107,7 +108,7 @@ function buildPanel(guildId) {
 
 // ─── Gemini Setup ───────────────────────────────────────────────────────────
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const CHAT_MODEL = "gemini-3.1-flash-lite";
+const CHAT_MODEL = "gemini-3.5-flash-lite";
 
 // แปลงไฟล์แนบ → ส่วนข้อมูลสำหรับ Gemini (รูป/PDF → inlineData, ไฟล์ข้อความ → แทรกเป็น text)
 async function attachmentToPart(attachment) {
@@ -124,6 +125,48 @@ async function attachmentToPart(attachment) {
   return null;
 }
 
+// ห่อข้อความยาวเป็นไฟล์ .txt แนบ Discord (กันข้อความเกิน 2000 ตัวอักษรโดนตัดสแปมหลายข้อความ)
+function textToFile(text, filename = `skibidri-${Date.now()}.txt`) {
+  return new AttachmentBuilder(Buffer.from(text, "utf-8"), { name: filename });
+}
+
+// ── PDF จริง (ใช้ตอนสั่ง /pdf) ──────────────────────────────────────────────
+// วางไฟล์ฟอนต์ไว้ในโฟลเดอร์ fonts/ ตามชื่อด้านล่าง แล้วเลือกจาก dropdown ตอนสั่ง /pdf ได้เลย
+const FONT_MAP = {
+  sarabun: path.join(__dirname, "fonts", "Sarabun-Regular.ttf"),
+  itim: path.join(__dirname, "fonts", "Itim-Regular.ttf"),
+  kanit: path.join(__dirname, "fonts", "Kanit-Regular.ttf"),
+};
+const DEFAULT_FONT = FONT_MAP.sarabun;
+
+function textToPDF(text, title = "Skibidri", fontSource = null) {
+  return new Promise((resolve, reject) => {
+    const font = fontSource || DEFAULT_FONT;
+    if (typeof font === "string" && !fs.existsSync(font)) {
+      return reject(new Error(`ไม่พบไฟล์ฟอนต์ (${path.basename(font)}) — เอาไฟล์ .ttf ไปวางไว้ที่โฟลเดอร์ fonts/ ก่อนครับ`));
+    }
+    const doc = new PDFDocument({ margin: 50 });
+    const chunks = [];
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    try {
+      doc.font(font); // รับได้ทั้ง path (string) และ Buffer (ฟอนต์ที่แนบมาเอง)
+    } catch (err) {
+      return reject(new Error(`โหลดฟอนต์ไม่สำเร็จ (ไฟล์อาจเสียหรือไม่ใช่ .ttf/.otf ที่ถูกต้อง): ${err.message}`));
+    }
+    doc.fontSize(18).text(title, { align: "center" });
+    doc.moveDown();
+    doc.fontSize(12).text(text, { align: "left" });
+    doc.end();
+  });
+}
+
+function pdfToFile(buffer, filename = `skibidri-${Date.now()}.pdf`) {
+  return new AttachmentBuilder(buffer, { name: filename });
+}
+
 async function askAI(userMessage, historyKey, guildId, attachments = [], retries = 2) {
   const fileParts = [];
   for (const att of attachments) {
@@ -135,7 +178,7 @@ async function askAI(userMessage, historyKey, guildId, attachments = [], retries
     }
   }
 
-  // gemini-3.1-flash-lite รองรับ text/image/PDF ในตัวเดียว → ส่งเป็น parts array เดียวเลย
+  // gemini-3.5-flash-lite รองรับ text/image/PDF ในตัวเดียว → ส่งเป็น parts array เดียวเลย
   const parts = [{ text: userMessage || "ช่วยอธิบายไฟล์ที่แนบมาให้หน่อยครับ" }, ...fileParts];
 
   const history = getHistory(historyKey);
@@ -231,8 +274,9 @@ async function startVoiceSession(ctx, voiceChannel) {
 
   connection.on(VoiceConnectionStatus.Disconnected, () => {
     console.log("🔌 Voice connection หลุด → เคลียร์ session");
-    try { voiceSessions.get(guildId)?.liveSession?.close(); } catch {}
-    voiceSessions.delete(guildId);
+    const s = voiceSessions.get(guildId);
+    voiceSessions.delete(guildId); // ลบก่อน close กัน onclose เข้าใจผิดว่าต้อง reconnect
+    try { s?.liveSession?.close(); } catch {}
     try { connection.destroy(); } catch {}
   });
 
@@ -257,34 +301,30 @@ async function startVoiceSession(ctx, voiceChannel) {
         end: { behavior: EndBehaviorType.AfterSilence, duration: 800 },
       });
       const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-      const pcmChunks = [];
 
       audioStream.pipe(decoder);
-      decoder.on("data", (chunk) => pcmChunks.push(chunk));
-      decoder.on("end", () => {
-        if (pcmChunks.length === 0) { console.log("⚠️ ไม่มีข้อมูลเสียงจาก Discord"); return; }
-        const pcm48k = Buffer.concat(pcmChunks);
-        const pcm16k = resampleTo16k(pcm48k);
-        console.log(`📊 ได้เสียง 48k=${pcm48k.length}B → 16k=${pcm16k.length}B`);
-        if (pcm16k.length < 3200) { console.log("⚠️ เสียงสั้นเกินไป ข้าม"); return; }
+      // ส่งเสียงแบบ stream ทันทีที่ได้แต่ละ chunk แทนรอบัฟเฟอร์ทั้งประโยคก่อนส่ง
+      // Gemini Live มี VAD ในตัวอยู่แล้ว ตรวจจับจังหวะพูดจบเองได้ ไม่ต้องรอ local silence 800ms ก่อนเริ่มส่ง
+      decoder.on("data", (chunk) => {
+        const pcm16k = resampleTo16k(chunk);
+        if (pcm16k.length === 0) return;
 
         const session = voiceSessions.get(guildId);
-        if (!session?.liveSession) { console.log("⚠️ ไม่มี liveSession (อาจ disconnect ไปแล้ว)"); return; }
+        if (!session?.liveSession) return;
         try {
           session.liveSession.sendRealtimeInput({
             audio: { data: pcm16k.toString("base64"), mimeType: "audio/pcm;rate=16000" },
           });
-          console.log("✅ ส่งเสียงไป Gemini แล้ว รอตอบ...");
         } catch (err) {
-          console.error("Error sending audio:", err);
+          console.error("Error sending audio chunk:", err);
         }
+      });
+      decoder.on("end", () => {
+        console.log(`🔇 ${member.user.tag} หยุดพูด`);
       });
       decoder.on("error", (err) => console.error("Opus decode error:", err));
     });
   });
-
-  let liveSession = null;
-  const connectStartTime = Date.now();
 
   let currentStream = null;
   function getStream() {
@@ -298,10 +338,27 @@ async function startVoiceSession(ctx, voiceChannel) {
     if (currentStream) { currentStream.end(); currentStream = null; }
   }
 
+  let liveSession;
+  try {
+    liveSession = await connectGeminiLive(ctx, guildId, getStream, endStream, player);
+  } catch (err) {
+    connection.destroy();
+    setTimeout(() => process.exit(1), 1000);
+    return;
+  }
+
+  voiceSessions.set(guildId, { connection, player, liveSession });
+}
+
+// เชื่อมต่อ Gemini Live — แยกออกมาเป็นฟังก์ชันเดี่ยวเพื่อให้เรียกซ้ำได้ตอน reconnect
+// (Gemini Live session มี limit ~10 นาที/connection แล้วหลุดเอง ต้องต่อใหม่ด้วย session handle)
+async function connectGeminiLive(ctx, guildId, getStream, endStream, player, resumeHandle = null) {
+  const connectStartTime = Date.now();
+  let handle = resumeHandle;
   const voicePrompt = getSystemPrompt(guildId) + "\n\n(โหมดเสียง: ตอบสั้น กระชับ เป็นธรรมชาติ เหมาะกับการพูดคุยด้วยเสียง)";
 
   try {
-    liveSession = await ai.live.connect({
+    const liveSession = await ai.live.connect({
       model: "gemini-3.1-flash-live-preview",
       config: {
         responseModalities: ["AUDIO"],
@@ -309,14 +366,24 @@ async function startVoiceSession(ctx, voiceChannel) {
         speechConfig: {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
         },
+        // เปิด session resumption — {} = session ใหม่, {handle} = ขอต่อ session เดิม
+        sessionResumption: handle ? { handle } : {},
       },
       callbacks: {
         onopen: () => {
-          console.log("✅ Gemini Live connected!");
-          ctx.channel.send("🎙️ **Skibidri Voice** พร้อมแล้ว! พูดได้เลยครับ 🔊");
+          console.log(resumeHandle ? "🔄 Gemini Live reconnected!" : "✅ Gemini Live connected!");
+          if (!resumeHandle) ctx.channel.send("🎙️ **Skibidri Voice** พร้อมแล้ว! พูดได้เลยครับ 🔊");
         },
         onmessage: (msg) => {
           try {
+            if (msg.sessionResumptionUpdate?.newHandle) {
+              handle = msg.sessionResumptionUpdate.newHandle;
+              const s = voiceSessions.get(guildId);
+              if (s) s.resumeHandle = handle;
+            }
+            if (msg.goAway) {
+              console.log(`⚠️ Gemini Live goAway ได้รับสัญญาณ ใกล้หลุด (timeLeft: ${msg.goAway.timeLeft ?? "?"})`);
+            }
             const parts = msg.serverContent?.modelTurn?.parts || [];
             for (const part of parts) {
               if (part.inlineData?.data) {
@@ -338,28 +405,40 @@ async function startVoiceSession(ctx, voiceChannel) {
         },
         onerror: (err) => {
           console.error("Gemini Live error:", err);
-          ctx.channel.send(`❌ Gemini Live error: ${err.message}`);
         },
         onclose: (e) => {
           console.log("Gemini Live disconnected. Code:", e?.code, "Reason:", e?.reason);
+
+          // ถ้า /leave ไปแล้วหรือ voice connection หลุดไปแล้ว จะไม่มี entry ใน voiceSessions → ไม่ต้อง reconnect
+          if (!voiceSessions.has(guildId)) return;
+
           const connectedDuration = Date.now() - connectStartTime;
           if (connectedDuration < 5000) {
             console.log("⚠️ หลุดเร็วเกินไป (< 5s) → restart บอท");
             ctx.channel.send("⚠️ Gemini Live หลุดเร็วผิดปกติ 🔄 กำลัง restart บอท...");
             setTimeout(() => process.exit(1), 1000);
+            return;
           }
+
+          // หลุดแบบปกติ (session timeout ~10 นาที หรือเน็ตสะดุด) → ต่อ session เดิมด้วย handle
+          console.log(`🔄 Session หลุด กำลังต่อใหม่... (มี resume handle: ${handle ? "มี" : "ไม่มี"})`);
+          setTimeout(() => {
+            connectGeminiLive(ctx, guildId, getStream, endStream, player, handle)
+              .then((newLiveSession) => {
+                const s = voiceSessions.get(guildId);
+                if (s) s.liveSession = newLiveSession;
+              })
+              .catch((err) => console.error("Reconnect Gemini Live ไม่สำเร็จ:", err));
+          }, 1000);
         },
       },
     });
+    return liveSession;
   } catch (err) {
     console.error("Failed to connect Gemini Live:", err);
-    ctx.channel.send(`❌ เชื่อมต่อ Gemini Live ไม่ได้: ${err.message}\n🔄 กำลัง restart บอท...`);
-    connection.destroy();
-    setTimeout(() => process.exit(1), 1000);
-    return;
+    ctx.channel.send(`❌ เชื่อมต่อ Gemini Live ไม่ได้: ${err.message}`);
+    throw err;
   }
-
-  voiceSessions.set(guildId, { connection, player, liveSession });
 }
 
 // ─── Slash Commands ─────────────────────────────────────────────────────────
@@ -372,6 +451,16 @@ const commands = [
   new SlashCommandBuilder().setName("ask").setDescription("ถาม Skibidri AI")
     .addStringOption(opt => opt.setName("question").setDescription("คำถามของคุณ").setRequired(true))
     .addAttachmentOption(opt => opt.setName("file").setDescription("รูปภาพ/PDF/ไฟล์ข้อความให้ AI ดู").setRequired(false)),
+  new SlashCommandBuilder().setName("pdf").setDescription("ให้ AI เขียนแล้วส่งเป็นไฟล์ PDF")
+    .addStringOption(opt => opt.setName("prompt").setDescription("สั่งให้เขียนอะไร เช่น เรื่องสั้น, สรุป, จดหมาย").setRequired(true))
+    .addStringOption(opt => opt.setName("font")
+      .setDescription("เลือกฟอนต์ (ไม่เลือก = Sarabun)")
+      .setRequired(false)
+      .addChoices(
+        { name: "Sarabun (ทางการ)", value: "sarabun" },
+        { name: "Itim (ลายมือ น่ารัก)", value: "itim" },
+        { name: "Kanit (โมเดิร์น)", value: "kanit" },
+      )),
   new SlashCommandBuilder().setName("join").setDescription("ให้บอทเข้าช่องเสียง + คุยกับ Gemini Live"),
   new SlashCommandBuilder().setName("leave").setDescription("ให้บอทออกจากช่องเสียง"),
 ];
@@ -436,6 +525,7 @@ client.on("interactionCreate", async (interaction) => {
 
 🤖 \`/ask <คำถาม> [ไฟล์]\` — ถาม Skibidri AI (แนบรูป/PDF/ไฟล์ข้อความได้)
 🎨 \`/image <คำอธิบาย>\` — สร้างรูปภาพ
+📄 \`/pdf <คำสั่ง>\` — ให้ AI เขียนแล้วส่งเป็นไฟล์ PDF
 🗑️ \`/clear\` — ล้างประวัติสนทนา
 ⚙️ \`/panel\` — ตั้งค่า Prompt ของ AI (Admin)
 🎙️ \`/join\` — เข้าช่องเสียง + คุยกับ Gemini Live
@@ -457,17 +547,53 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.editReply(buildPanel(interaction.guild.id));
     }
 
+    // ---- /pdf ----
+    if (commandName === "pdf") {
+      const prompt = interaction.options.getString("prompt");
+      const fontChoice = interaction.options.getString("font"); // "sarabun" | "itim" | "kanit" | null
+      try {
+        const fontSource = fontChoice ? FONT_MAP[fontChoice] : null; // null → textToPDF ใช้ DEFAULT_FONT (Sarabun) เอง
+        const content = await askAI(prompt, historyKey, interaction.guild?.id, []);
+        const pdfBuffer = await textToPDF(content, "Skibidri", fontSource);
+        return interaction.editReply({ content: "📄 นี่ไฟล์ PDF ครับ", files: [pdfToFile(pdfBuffer)] });
+      } catch (err) {
+        console.error("PDF generation error:", err);
+        return interaction.editReply(`❌ สร้าง PDF ไม่ได้: ${err.message}`);
+      }
+    }
+
     // ---- /image ----
     if (commandName === "image") {
       const prompt = interaction.options.getString("prompt");
       try {
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=flux-pro&width=1024&height=1024&nologo=true&seed=${Date.now()}`;
-        const res = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 60000 });
-        const attachment = new AttachmentBuilder(Buffer.from(res.data), { name: "image.png" });
+        // 1. ส่ง request สร้างรูป
+        const createRes = await axios.post(
+          "https://api.bfl.ml/v1/flux-pro-1.1",
+          { prompt, width: 1024, height: 1024 },
+          { headers: { "x-key": process.env.BFL_API_KEY, "Content-Type": "application/json" } }
+        );
+        const taskId = createRes.data.id;
+        if (!taskId) return interaction.editReply("❌ สร้างรูปไม่สำเร็จ ลองใหม่ครับ");
+
+        // 2. รอ poll จนรูปพร้อม (timeout 60s)
+        let imageUrl = null;
+        for (let i = 0; i < 30; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const pollRes = await axios.get(`https://api.bfl.ml/v1/get_result?id=${taskId}`, {
+            headers: { "x-key": process.env.BFL_API_KEY }
+          });
+          if (pollRes.data.status === "Ready") { imageUrl = pollRes.data.result?.sample; break; }
+          if (pollRes.data.status === "Error") break;
+        }
+        if (!imageUrl) return interaction.editReply("❌ สร้างรูปนานเกินไป ลองใหม่ครับ");
+
+        // 3. ดาวน์โหลดและส่งรูป
+        const imgRes = await axios.get(imageUrl, { responseType: "arraybuffer" });
+        const attachment = new AttachmentBuilder(Buffer.from(imgRes.data), { name: "image.png" });
         return interaction.editReply({ content: `🎨 **${prompt}**`, files: [attachment] });
       } catch (err) {
-        console.error("Image generation error:", err);
-        return interaction.editReply("❌ สร้างรูปไม่สำเร็จ ลองใหม่อีกครั้งครับ");
+        console.error("Flux API error:", err?.response?.data || err.message);
+        return interaction.editReply("❌ สร้างรูปไม่สำเร็จ ลองใหม่ครับ");
       }
     }
 
@@ -486,9 +612,9 @@ client.on("interactionCreate", async (interaction) => {
     if (commandName === "leave") {
       const s = voiceSessions.get(interaction.guild?.id);
       if (!s) return interaction.editReply("❌ บอทไม่ได้อยู่ในช่องเสียงครับ!");
+      voiceSessions.delete(interaction.guild.id); // ลบก่อน close กัน onclose สั่ง reconnect
       try { s.liveSession?.close(); } catch {}
       s.connection.destroy();
-      voiceSessions.delete(interaction.guild.id);
       return interaction.editReply("👋 ออกจากช่องเสียงแล้วครับ");
     }
 
@@ -501,9 +627,7 @@ client.on("interactionCreate", async (interaction) => {
         if (replyText.length <= 2000) {
           await interaction.editReply(replyText);
         } else {
-          const chunks = replyText.match(/.{1,2000}/gs) || [];
-          await interaction.editReply(chunks[0]);
-          for (const chunk of chunks.slice(1)) await interaction.followUp(chunk);
+          await interaction.editReply({ content: "📄 คำตอบยาวเกิน ส่งเป็นไฟล์ให้ครับ", files: [textToFile(replyText)] });
         }
       } catch (error) {
         console.error("Error:", error);
@@ -614,8 +738,7 @@ client.on("messageCreate", async (message) => {
     if (replyText.length <= 2000) {
       await message.reply(replyText);
     } else {
-      const chunks = replyText.match(/.{1,2000}/gs) || [];
-      for (const chunk of chunks) await message.channel.send(chunk);
+      await message.reply({ content: "📄 คำตอบยาวเกิน ส่งเป็นไฟล์ให้ครับ", files: [textToFile(replyText)] });
     }
   } catch (error) {
     console.error("Error:", error);
