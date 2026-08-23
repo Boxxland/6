@@ -65,13 +65,15 @@ function buildSystemPrompt(name) {
 
 const DEFAULT_SYSTEM = buildSystemPrompt(DEFAULT_NAME);
 
+const FORMATTING_RULE = "\n\n(ข้อกำหนดการตอบ: ห้ามใช้ LaTeX หรือสัญลักษณ์คณิตศาสตร์แบบ $...$ / \\(...\\) / \\[...\\] เพราะ Discord render ไม่ได้ ให้ใช้ตัวอักษร Unicode ธรรมดาแทน เช่น x², √2, π, ½ แทน)";
+
 function getSystemPrompt(guildId) {
-  if (!guildId) return DEFAULT_SYSTEM;
+  if (!guildId) return DEFAULT_SYSTEM + FORMATTING_RULE;
   const config = loadConfig();
   const g = config[guildId] || {};
-  if (g.customPrompt) return g.customPrompt;
-  if (g.aiName) return buildSystemPrompt(g.aiName);
-  return DEFAULT_SYSTEM;
+  if (g.customPrompt) return g.customPrompt + FORMATTING_RULE;
+  if (g.aiName) return buildSystemPrompt(g.aiName) + FORMATTING_RULE;
+  return DEFAULT_SYSTEM + FORMATTING_RULE;
 }
 
 // ─── Panel UI ───────────────────────────────────────────────────────────────
