@@ -4,7 +4,7 @@ module.exports = {
   apps: [
     {
       name: "skibidri-ai",
-      script: "./Skibidri.js",
+      script: "./index.js",
       cwd: __dirname,
       watch: false,
       autorestart: true,
