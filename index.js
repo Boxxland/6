@@ -10,6 +10,9 @@ const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const PDFDocument = require("pdfkit");
+const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require("docx");
+const ExcelJS = require("exceljs");
+const JSZip = require("jszip");
 const { PassThrough } = require("stream");
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
@@ -66,14 +69,18 @@ function buildSystemPrompt(name) {
 const DEFAULT_SYSTEM = buildSystemPrompt(DEFAULT_NAME);
 
 const FORMATTING_RULE = "\n\n(ข้อกำหนดการตอบ: ห้ามใช้ LaTeX หรือสัญลักษณ์คณิตศาสตร์แบบ $...$ / \\(...\\) / \\[...\\] เพราะ Discord render ไม่ได้ ให้ใช้ตัวอักษร Unicode ธรรมดาแทน เช่น x², √2, π, ½ แทน)";
+const FILE_COMMAND_RULE = `\n\n(คำสั่งพิเศษสร้างไฟล์: ถ้า user ขอให้สร้าง/บันทึกเป็นไฟล์อย่างชัดเจน เช่น "ทำเป็นไฟล์ให้หน่อย", "เซฟเป็น pdf/docx/excel/txt" ให้ตอบกลับด้วยรูปแบบนี้เท่านั้น ห้ามมีข้อความอื่นปนเลย:
+{newfile(ชื่อไฟล์.นามสกุล)"เนื้อหาไฟล์ทั้งหมด"}
+ตัวอย่าง: {newfile(นิทาน.txt)"กาลครั้งหนึ่งนานมาแล้ว..."}
+รองรับนามสกุล .txt .pdf .docx .xlsx เท่านั้น ถ้า user ไม่ได้ขอไฟล์ชัดเจน ให้ตอบเป็นข้อความปกติตามเดิม ห้ามใช้รูปแบบนี้พร่ำเพรื่อ)`;
 
 function getSystemPrompt(guildId) {
-  if (!guildId) return DEFAULT_SYSTEM + FORMATTING_RULE;
+  if (!guildId) return DEFAULT_SYSTEM + FORMATTING_RULE + FILE_COMMAND_RULE;
   const config = loadConfig();
   const g = config[guildId] || {};
-  if (g.customPrompt) return g.customPrompt + FORMATTING_RULE;
-  if (g.aiName) return buildSystemPrompt(g.aiName) + FORMATTING_RULE;
-  return DEFAULT_SYSTEM + FORMATTING_RULE;
+  if (g.customPrompt) return g.customPrompt + FORMATTING_RULE + FILE_COMMAND_RULE;
+  if (g.aiName) return buildSystemPrompt(g.aiName) + FORMATTING_RULE + FILE_COMMAND_RULE;
+  return DEFAULT_SYSTEM + FORMATTING_RULE + FILE_COMMAND_RULE;
 }
 
 // ─── Panel UI ───────────────────────────────────────────────────────────────
@@ -141,6 +148,18 @@ const FONT_MAP = {
 };
 const DEFAULT_FONT = FONT_MAP.sarabun;
 
+// ตัด markdown syntax ออกก่อน — pdfkit เขียน text ดิบๆ ไม่แปลง ** เป็นตัวหนาให้
+function stripMarkdown(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")  // **bold**
+    .replace(/\*(.+?)\*/g, "$1")       // *italic*
+    .replace(/__(.+?)__/g, "$1")       // __bold__
+    .replace(/_(.+?)_/g, "$1")         // _italic_
+    .replace(/^#{1,6}\s+/gm, "")       // # heading
+    .replace(/`([^`]+)`/g, "$1")       // `code`
+    .replace(/^[-*]\s+/gm, "• ");      // - bullet → •
+}
+
 function textToPDF(text, title = "Skibidri", fontSource = null) {
   return new Promise((resolve, reject) => {
     const font = fontSource || DEFAULT_FONT;
@@ -167,6 +186,91 @@ function textToPDF(text, title = "Skibidri", fontSource = null) {
 
 function pdfToFile(buffer, filename = `skibidri-${Date.now()}.pdf`) {
   return new AttachmentBuilder(buffer, { name: filename });
+}
+
+// ── DOCX ── ใช้ lib "docx" — bold จริง (**text**) render เป็นตัวหนาได้เลย ไม่ต้องมีฟอนต์แยก
+function parseMarkdownRuns(line) {
+  const runs = [];
+  const regex = /\*\*(.+?)\*\*/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(line))) {
+    if (match.index > lastIndex) runs.push(new TextRun(line.slice(lastIndex, match.index)));
+    runs.push(new TextRun({ text: match[1], bold: true }));
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < line.length) runs.push(new TextRun(line.slice(lastIndex)));
+  if (runs.length === 0) runs.push(new TextRun(""));
+  return runs;
+}
+
+async function textToDocx(text, title = "Skibidri") {
+  const paragraphs = [
+    new Paragraph({ text: title, heading: HeadingLevel.HEADING_1 }),
+    ...text.split("\n").map((line) => new Paragraph({ children: parseMarkdownRuns(line) })),
+  ];
+  const doc = new Document({ sections: [{ children: paragraphs }] });
+  return await Packer.toBuffer(doc);
+}
+
+function docxToFile(buffer, filename = `skibidri-${Date.now()}.docx`) {
+  return new AttachmentBuilder(buffer, { name: filename });
+}
+
+// ── XLSX ── ถ้า Gemini ตอบเป็นตาราง markdown (| col | col |) จะ parse ใส่ cell ให้ ไม่งั้น fallback บรรทัดละแถว
+async function textToXlsx(text, title = "Skibidri") {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet((title || "Sheet1").slice(0, 31));
+
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const tableLines = lines.filter((l) => l.startsWith("|"));
+  const isSepRow = (l) => /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/.test(l);
+
+  if (tableLines.length >= 2) {
+    const rows = tableLines
+      .filter((l) => !isSepRow(l))
+      .map((l) => l.split("|").map((c) => c.trim()).filter((c, i, arr) => !(i === 0 && c === "") && !(i === arr.length - 1 && c === "")));
+    rows.forEach((row) => ws.addRow(row));
+    ws.getRow(1).font = { bold: true };
+  } else {
+    lines.forEach((line) => ws.addRow([stripMarkdown(line)]));
+  }
+  ws.columns.forEach((col) => { col.width = 30; });
+  return await wb.xlsx.writeBuffer();
+}
+
+function xlsxToFile(buffer, filename = `skibidri-${Date.now()}.xlsx`) {
+  return new AttachmentBuilder(buffer, { name: filename });
+}
+
+// ── ZIP ── รวมทุกฟอร์แมตไว้ในไฟล์เดียว
+async function bundleZip(content, title, fontSource) {
+  const zip = new JSZip();
+  zip.file(`${title}.txt`, content);
+  zip.file(`${title}.pdf`, await textToPDF(stripMarkdown(content), title, fontSource));
+  zip.file(`${title}.docx`, await textToDocx(content, title));
+  zip.file(`${title}.xlsx`, await textToXlsx(content, title));
+  return await zip.generateAsync({ type: "nodebuffer" });
+}
+
+function zipToFile(buffer, filename = `skibidri-${Date.now()}.zip`) {
+  return new AttachmentBuilder(buffer, { name: filename });
+}
+
+// ── คำสั่งลับ {newfile(ชื่อไฟล์.นามสกุล)"เนื้อหา"} ── ให้ Gemini ตอบแบบนี้เวลา user ขอไฟล์ในแชทปกติ
+function parseFileCommand(text) {
+  const match = text.trim().match(/^\{newfile\(([^)]+)\)"([\s\S]*)"\}$/);
+  if (!match) return null;
+  return { filename: match[1].trim(), content: match[2] };
+}
+
+async function createFileFromCommand(filename, content) {
+  const ext = path.extname(filename).toLowerCase();
+  const base = path.basename(filename, ext) || "skibidri";
+  if (ext === ".pdf") return pdfToFile(await textToPDF(stripMarkdown(content), base), filename);
+  if (ext === ".docx") return docxToFile(await textToDocx(content, base), filename);
+  if (ext === ".xlsx") return xlsxToFile(await textToXlsx(content, base), filename);
+  return textToFile(content, filename || `skibidri-${Date.now()}.txt`); // .txt หรือนามสกุลอื่นที่ไม่รู้จัก
 }
 
 async function askAI(userMessage, historyKey, guildId, attachments = [], retries = 2) {
@@ -453,10 +557,20 @@ const commands = [
   new SlashCommandBuilder().setName("ask").setDescription("ถาม Skibidri AI")
     .addStringOption(opt => opt.setName("question").setDescription("คำถามของคุณ").setRequired(true))
     .addAttachmentOption(opt => opt.setName("file").setDescription("รูปภาพ/PDF/ไฟล์ข้อความให้ AI ดู").setRequired(false)),
-  new SlashCommandBuilder().setName("pdf").setDescription("ให้ AI เขียนแล้วส่งเป็นไฟล์ PDF")
-    .addStringOption(opt => opt.setName("prompt").setDescription("สั่งให้เขียนอะไร เช่น เรื่องสั้น, สรุป, จดหมาย").setRequired(true))
+  new SlashCommandBuilder().setName("export").setDescription("ให้ AI เขียนแล้วส่งเป็นไฟล์ (PDF/DOCX/Excel/TXT/ZIP)")
+    .addStringOption(opt => opt.setName("prompt").setDescription("สั่งให้เขียนอะไร เช่น เรื่องสั้น, สรุป, จดหมาย, ตาราง").setRequired(true))
+    .addStringOption(opt => opt.setName("format")
+      .setDescription("เลือกฟอร์แมตไฟล์")
+      .setRequired(true)
+      .addChoices(
+        { name: "PDF", value: "pdf" },
+        { name: "Word (.docx)", value: "docx" },
+        { name: "Excel (.xlsx)", value: "xlsx" },
+        { name: "Text (.txt)", value: "txt" },
+        { name: "ZIP (รวมทุกฟอร์แมต)", value: "zip" },
+      ))
     .addStringOption(opt => opt.setName("font")
-      .setDescription("เลือกฟอนต์ (ไม่เลือก = Sarabun)")
+      .setDescription("ฟอนต์ (ใช้กับ PDF/ZIP เท่านั้น — ไม่เลือก = Sarabun)")
       .setRequired(false)
       .addChoices(
         { name: "Sarabun (ทางการ)", value: "sarabun" },
@@ -527,7 +641,7 @@ client.on("interactionCreate", async (interaction) => {
 
 🤖 \`/ask <คำถาม> [ไฟล์]\` — ถาม Skibidri AI (แนบรูป/PDF/ไฟล์ข้อความได้)
 🎨 \`/image <คำอธิบาย>\` — สร้างรูปภาพ
-📄 \`/pdf <คำสั่ง>\` — ให้ AI เขียนแล้วส่งเป็นไฟล์ PDF
+📄 \`/export <คำสั่ง> <format>\` — ให้ AI เขียนแล้วส่งเป็นไฟล์ (PDF/Word/Excel/TXT/ZIP)
 🗑️ \`/clear\` — ล้างประวัติสนทนา
 ⚙️ \`/panel\` — ตั้งค่า Prompt ของ AI (Admin)
 🎙️ \`/join\` — เข้าช่องเสียง + คุยกับ Gemini Live
@@ -549,18 +663,39 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.editReply(buildPanel(interaction.guild.id));
     }
 
-    // ---- /pdf ----
-    if (commandName === "pdf") {
+    // ---- /export ----
+    if (commandName === "export") {
       const prompt = interaction.options.getString("prompt");
-      const fontChoice = interaction.options.getString("font"); // "sarabun" | "itim" | "kanit" | null
+      const format = interaction.options.getString("format"); // pdf | docx | xlsx | txt | zip
+      const fontChoice = interaction.options.getString("font");
+      const fontSource = fontChoice ? FONT_MAP[fontChoice] : null; // null → ใช้ DEFAULT_FONT (Sarabun)
+      const title = "Skibidri";
       try {
-        const fontSource = fontChoice ? FONT_MAP[fontChoice] : null; // null → textToPDF ใช้ DEFAULT_FONT (Sarabun) เอง
         const content = await askAI(prompt, historyKey, interaction.guild?.id, []);
-        const pdfBuffer = await textToPDF(content, "Skibidri", fontSource);
-        return interaction.editReply({ content: "📄 นี่ไฟล์ PDF ครับ", files: [pdfToFile(pdfBuffer)] });
+
+        if (format === "txt") {
+          return interaction.editReply({ content: "📄 นี่ไฟล์ TXT ครับ", files: [textToFile(content, `${title}.txt`)] });
+        }
+        if (format === "pdf") {
+          const buf = await textToPDF(stripMarkdown(content), title, fontSource);
+          return interaction.editReply({ content: "📄 นี่ไฟล์ PDF ครับ", files: [pdfToFile(buf, `${title}.pdf`)] });
+        }
+        if (format === "docx") {
+          const buf = await textToDocx(content, title);
+          return interaction.editReply({ content: "📄 นี่ไฟล์ Word ครับ", files: [docxToFile(buf, `${title}.docx`)] });
+        }
+        if (format === "xlsx") {
+          const buf = await textToXlsx(content, title);
+          return interaction.editReply({ content: "📄 นี่ไฟล์ Excel ครับ", files: [xlsxToFile(buf, `${title}.xlsx`)] });
+        }
+        if (format === "zip") {
+          const buf = await bundleZip(content, title, fontSource);
+          return interaction.editReply({ content: "📦 นี่ไฟล์ ZIP รวมทุกฟอร์แมตครับ", files: [zipToFile(buf, `${title}.zip`)] });
+        }
+        return interaction.editReply("❌ format ไม่ถูกต้องครับ");
       } catch (err) {
-        console.error("PDF generation error:", err);
-        return interaction.editReply(`❌ สร้าง PDF ไม่ได้: ${err.message}`);
+        console.error("Export generation error:", err);
+        return interaction.editReply(`❌ สร้างไฟล์ไม่ได้: ${err.message}`);
       }
     }
 
@@ -635,7 +770,11 @@ client.on("interactionCreate", async (interaction) => {
       const file = interaction.options.getAttachment("file");
       try {
         const replyText = await askAI(userMessage, historyKey, interaction.guild?.id, file ? [file] : []);
-        if (replyText.length <= 2000) {
+        const fileCmd = parseFileCommand(replyText);
+        if (fileCmd) {
+          const attachment = await createFileFromCommand(fileCmd.filename, fileCmd.content);
+          await interaction.editReply({ content: `📄 นี่ไฟล์ ${fileCmd.filename} ครับ`, files: [attachment] });
+        } else if (replyText.length <= 2000) {
           await interaction.editReply(replyText);
         } else {
           await interaction.editReply({ content: "📄 คำตอบยาวเกิน ส่งเป็นไฟล์ให้ครับ", files: [textToFile(replyText)] });
@@ -746,7 +885,11 @@ client.on("messageCreate", async (message) => {
     await message.channel.sendTyping();
     const replyText = await askAI(userMessage, historyKey, message.guild?.id, attachments);
 
-    if (replyText.length <= 2000) {
+    const fileCmd = parseFileCommand(replyText);
+    if (fileCmd) {
+      const attachment = await createFileFromCommand(fileCmd.filename, fileCmd.content);
+      await message.reply({ content: `📄 นี่ไฟล์ ${fileCmd.filename} ครับ`, files: [attachment] });
+    } else if (replyText.length <= 2000) {
       await message.reply(replyText);
     } else {
       await message.reply({ content: "📄 คำตอบยาวเกิน ส่งเป็นไฟล์ให้ครับ", files: [textToFile(replyText)] });
