@@ -110,14 +110,110 @@ function buildPanel(guildId) {
   );
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("panel_reset").setLabel("🔄 รีเซ็ตเป็นค่าเริ่มต้น").setStyle(ButtonStyle.Danger).setDisabled(!custom && !aiName),
+    new ButtonBuilder().setCustomId("menu_back").setLabel("⬅️ กลับเมนู").setStyle(ButtonStyle.Secondary),
   );
 
   return { embeds: [embed], components: [row1, row2] };
 }
 
+// ─── /menu — ศูนย์รวมปุ่มลัดทั้งหมด ──────────────────────────────────────────
+function buildMainMenu(guildId, historyKey) {
+  const config = loadConfig();
+  const g = config[guildId] || {};
+  const modelKey = g.modelVersion || DEFAULT_MODEL_KEY;
+  const modelLabel = MODEL_MAP[modelKey]?.label || MODEL_MAP[DEFAULT_MODEL_KEY].label;
+  const aiName = g.aiName || DEFAULT_NAME;
+  const historyCount = getHistory(historyKey).length;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`🎛️ ${aiName} — เมนูหลัก`)
+    .setDescription(`**โมเดลปัจจุบัน:** ${modelLabel}\n**ประวัติแชทในห้องนี้:** ${historyCount} ข้อความ`)
+    .setFooter({ text: "เลือกเมนูจากปุ่มด้านล่าง" })
+    .setTimestamp();
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("menu_persona").setLabel("🧠 ตั้งนิสัย AI").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("menu_model").setLabel("🔀 เปลี่ยนโมเดล").setStyle(ButtonStyle.Success),
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("menu_archive").setLabel("📚 คลังแชท").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("menu_newchat").setLabel("🆕 แชทใหม่").setStyle(ButtonStyle.Danger),
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
+}
+
+function buildModelMenu(guildId) {
+  const config = loadConfig();
+  const currentKey = config[guildId]?.modelVersion || DEFAULT_MODEL_KEY;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle("🔀 เลือกโมเดล AI")
+    .setDescription(
+      Object.entries(MODEL_MAP)
+        .map(([k, v]) => `${k === currentKey ? "✅" : "▫️"} **${v.label}**`)
+        .join("\n")
+    );
+
+  const row1 = new ActionRowBuilder().addComponents(
+    ...Object.entries(MODEL_MAP).map(([k, v]) =>
+      new ButtonBuilder()
+        .setCustomId(`menu_model_${k}`)
+        .setLabel(v.label)
+        .setStyle(k === currentKey ? ButtonStyle.Success : ButtonStyle.Secondary)
+    )
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("menu_back").setLabel("⬅️ กลับเมนู").setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
+}
+
+function buildArchiveView(historyKey) {
+  const history = getHistory(historyKey);
+
+  const embed = new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setTitle("📚 คลังแชท")
+    .setDescription(
+      history.length === 0
+        ? "ยังไม่มีประวัติสนทนาในห้องนี้ครับ"
+        : `เก็บไว้ **${history.length}** ข้อความล่าสุด (auto-ลบเมื่อเกิน 20)`
+    );
+
+  for (const msg of history.slice(-6)) {
+    const text = msg.parts?.[0]?.text || "";
+    const preview = text.length > 200 ? text.slice(0, 200) + "..." : text;
+    embed.addFields({ name: msg.role === "user" ? "🙋 User" : "🤖 AI", value: preview || "(ไฟล์/รูปภาพ)" });
+  }
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("menu_back").setLabel("⬅️ กลับเมนู").setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
 // ─── Gemini Setup ───────────────────────────────────────────────────────────
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const CHAT_MODEL = "gemini-3.5-flash-lite";
+
+const MODEL_MAP = {
+  "1.1": { id: "gemma-4-31b-it", label: "Skibidri 1.1 (Gemma)" },
+  "1.2": { id: "gemini-3.1-flash-lite", label: "Skibidri 1.2 (Gemini 3.1)" },
+  "1.3": { id: "gemini-3.5-flash-lite", label: "Skibidri 1.3 (Gemini 3.5)" },
+};
+const DEFAULT_MODEL_KEY = "1.3";
+
+function getChatModel(guildId) {
+  if (!guildId) return MODEL_MAP[DEFAULT_MODEL_KEY].id;
+  const config = loadConfig();
+  const key = config[guildId]?.modelVersion;
+  return (key && MODEL_MAP[key]) ? MODEL_MAP[key].id : MODEL_MAP[DEFAULT_MODEL_KEY].id;
+}
 
 // แปลงไฟล์แนบ → ส่วนข้อมูลสำหรับ Gemini (รูป/PDF → inlineData, ไฟล์ข้อความ → แทรกเป็น text)
 async function attachmentToPart(attachment) {
@@ -289,7 +385,7 @@ async function askAI(userMessage, historyKey, guildId, attachments = [], retries
 
   const history = getHistory(historyKey);
   const chat = ai.chats.create({
-    model: CHAT_MODEL,
+    model: getChatModel(guildId),
     config: { systemInstruction: getSystemPrompt(guildId) },
     history,
   });
@@ -551,7 +647,17 @@ async function connectGeminiLive(ctx, guildId, getStream, endStream, player, res
 const commands = [
   new SlashCommandBuilder().setName("help").setDescription("แสดงคำสั่งทั้งหมด"),
   new SlashCommandBuilder().setName("clear").setDescription("ล้างประวัติการสนทนากับ AI"),
+  new SlashCommandBuilder().setName("menu").setDescription("เมนูหลัก Skibidri — ตั้งนิสัย/เปลี่ยนโมเดล/คลังแชท/แชทใหม่"),
   new SlashCommandBuilder().setName("panel").setDescription("เปิด panel ตั้งค่า AI (Admin)"),
+  new SlashCommandBuilder().setName("model").setDescription("เลือกโมเดล AI ที่ใช้ตอบ")
+    .addStringOption(opt => opt.setName("version")
+      .setDescription("เลือกเวอร์ชัน")
+      .setRequired(true)
+      .addChoices(
+        { name: "Skibidri 1.1 (Gemma)", value: "1.1" },
+        { name: "Skibidri 1.2 (Gemini 3.1)", value: "1.2" },
+        { name: "Skibidri 1.3 (Gemini 3.5)", value: "1.3" },
+      )),
   new SlashCommandBuilder().setName("image").setDescription("สร้างรูปภาพด้วย AI")
     .addStringOption(opt => opt.setName("prompt").setDescription("คำอธิบายรูปภาพ").setRequired(true)),
   new SlashCommandBuilder().setName("ask").setDescription("ถาม Skibidri AI")
@@ -639,11 +745,13 @@ client.on("interactionCreate", async (interaction) => {
     if (commandName === "help") {
       return interaction.editReply(`📚 **คำสั่งทั้งหมด**
 
+🎛️ \`/menu\` — เมนูหลัก (ตั้งนิสัย/เปลี่ยนโมเดล/คลังแชท/แชทใหม่)
 🤖 \`/ask <คำถาม> [ไฟล์]\` — ถาม Skibidri AI (แนบรูป/PDF/ไฟล์ข้อความได้)
 🎨 \`/image <คำอธิบาย>\` — สร้างรูปภาพ
 📄 \`/export <คำสั่ง> <format>\` — ให้ AI เขียนแล้วส่งเป็นไฟล์ (PDF/Word/Excel/TXT/ZIP)
 🗑️ \`/clear\` — ล้างประวัติสนทนา
 ⚙️ \`/panel\` — ตั้งค่า Prompt ของ AI (Admin)
+🔀 \`/model\` — เลือกโมเดล AI: Skibidri 1.1 (Gemma) / 1.2 (Gemini 3.1) / 1.3 (Gemini 3.5)
 🎙️ \`/join\` — เข้าช่องเสียง + คุยกับ Gemini Live
 👋 \`/leave\` — ออกจากช่องเสียง
 ❓ \`/help\` — แสดงคำสั่งทั้งหมด
@@ -657,10 +765,27 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.editReply("🗑️ ล้างประวัติสนทนาแล้วครับ!");
     }
 
+    // ---- /menu ----
+    if (commandName === "menu") {
+      if (!interaction.guild) return interaction.editReply("❌ คำสั่งนี้ใช้ได้เฉพาะใน server ครับ");
+      return interaction.editReply(buildMainMenu(interaction.guild.id, historyKey));
+    }
+
     // ---- /panel ----
     if (commandName === "panel") {
       if (!interaction.guild) return interaction.editReply("❌ คำสั่งนี้ใช้ได้เฉพาะใน server ครับ");
       return interaction.editReply(buildPanel(interaction.guild.id));
+    }
+
+    // ---- /model ----
+    if (commandName === "model") {
+      if (!interaction.guild) return interaction.editReply("❌ คำสั่งนี้ใช้ได้เฉพาะใน server ครับ");
+      const version = interaction.options.getString("version");
+      const config = loadConfig();
+      config[interaction.guild.id] = config[interaction.guild.id] || {};
+      config[interaction.guild.id].modelVersion = version;
+      saveConfig(config);
+      return interaction.editReply(`✅ เปลี่ยนเป็น **${MODEL_MAP[version].label}** แล้วครับ`);
     }
 
     // ---- /export ----
@@ -791,6 +916,42 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Buttons / Modal (Prompt Panel) — ใช้ได้เฉพาะใน server ──────────────────
   if (!interaction.guild) return;
+
+  const menuHistoryKey = `ch-${interaction.channelId}`;
+
+  if (interaction.isButton() && interaction.customId === "menu_persona") {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: "❌ ปุ่มนี้ใช้ได้เฉพาะ Admin ครับ", ephemeral: true });
+    }
+    return interaction.update(buildPanel(interaction.guildId));
+  }
+
+  if (interaction.isButton() && interaction.customId === "menu_model") {
+    return interaction.update(buildModelMenu(interaction.guildId));
+  }
+
+  if (interaction.isButton() && interaction.customId?.startsWith("menu_model_")) {
+    const version = interaction.customId.replace("menu_model_", "");
+    if (!MODEL_MAP[version]) return interaction.reply({ content: "❌ โมเดลไม่ถูกต้องครับ", ephemeral: true });
+    const config = loadConfig();
+    config[interaction.guildId] = config[interaction.guildId] || {};
+    config[interaction.guildId].modelVersion = version;
+    saveConfig(config);
+    return interaction.update(buildModelMenu(interaction.guildId));
+  }
+
+  if (interaction.isButton() && interaction.customId === "menu_archive") {
+    return interaction.update(buildArchiveView(menuHistoryKey));
+  }
+
+  if (interaction.isButton() && interaction.customId === "menu_newchat") {
+    clearHistory(menuHistoryKey);
+    return interaction.update(buildMainMenu(interaction.guildId, menuHistoryKey));
+  }
+
+  if (interaction.isButton() && interaction.customId === "menu_back") {
+    return interaction.update(buildMainMenu(interaction.guildId, menuHistoryKey));
+  }
 
   if (interaction.isButton() && ["panel_setprompt", "panel_reset", "panel_setname"].includes(interaction.customId)) {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
