@@ -369,6 +369,21 @@ async function createFileFromCommand(filename, content) {
   return textToFile(content, filename || `skibidri-${Date.now()}.txt`); // .txt หรือนามสกุลอื่นที่ไม่รู้จัก
 }
 
+// สร้างรูปฟรีผ่าน Cloudflare Workers AI (Flux schnell) — ใช้เป็น fallback ตอน BFL หมดเครดิต/error
+// ต้องตั้ง CF_ACCOUNT_ID และ CF_API_TOKEN ใน .env (ดูวิธีสมัครใน dash.cloudflare.com)
+async function generateImageCloudflareFree(prompt) {
+  const { CF_ACCOUNT_ID, CF_API_TOKEN } = process.env;
+  if (!CF_ACCOUNT_ID || !CF_API_TOKEN) throw new Error("Missing CF_ACCOUNT_ID or CF_API_TOKEN");
+
+  const res = await axios.post(
+    `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell`,
+    { prompt, seed: Math.floor(Math.random() * 1e9) },
+    { headers: { Authorization: `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" } }
+  );
+  if (!res.data?.success) throw new Error(`Cloudflare AI error: ${JSON.stringify(res.data?.errors)}`);
+  return Buffer.from(res.data.result.image, "base64"); // base64 -> Buffer พร้อมแนบไฟล์
+}
+
 async function askAI(userMessage, historyKey, guildId, attachments = [], retries = 2) {
   const fileParts = [];
   for (const att of attachments) {
@@ -827,17 +842,17 @@ client.on("interactionCreate", async (interaction) => {
     // ---- /image ----
     if (commandName === "image") {
       const prompt = interaction.options.getString("prompt");
+
+      // ลอง BFL Flux Pro ก่อน (คุณภาพสูงกว่า) — ถ้า error อะไรก็ตาม (รวมเครดิตหมด) ไป fallback ฟรีแทน
       try {
-        // 1. ส่ง request สร้างรูป
         const createRes = await axios.post(
           "https://api.bfl.ai/v1/flux-pro-1.1",
           { prompt, width: 1024, height: 1024 },
           { headers: { "x-key": process.env.BFL_API_KEY, "Content-Type": "application/json" } }
         );
         const { id: taskId, polling_url: pollingUrl } = createRes.data;
-        if (!taskId || !pollingUrl) return interaction.editReply("❌ สร้างรูปไม่สำเร็จ ลองใหม่ครับ");
+        if (!taskId || !pollingUrl) throw new Error("BFL: no task id / polling url");
 
-        // 2. รอ poll จนรูปพร้อม (timeout ~60s) — ใช้ polling_url ที่ได้มาตรงๆ ห้ามสร้าง URL เอง
         let imageUrl = null;
         let failReason = null;
         for (let i = 0; i < 120; i++) {
@@ -855,15 +870,23 @@ client.on("interactionCreate", async (interaction) => {
         if (failReason === "Request Moderated" || failReason === "Content Moderated") {
           return interaction.editReply("🚫 prompt นี้โดน moderate ครับ ลองเปลี่ยนคำอธิบายใหม่");
         }
-        if (failReason) return interaction.editReply(`❌ สร้างรูปไม่สำเร็จ (${failReason})`);
-        if (!imageUrl) return interaction.editReply("❌ สร้างรูปนานเกินไป ลองใหม่ครับ");
+        if (failReason) throw new Error(`BFL: ${failReason}`);
+        if (!imageUrl) throw new Error("BFL: timed out waiting for image");
 
-        // 3. ดาวน์โหลดและส่งรูป
         const imgRes = await axios.get(imageUrl, { responseType: "arraybuffer" });
         const attachment = new AttachmentBuilder(Buffer.from(imgRes.data), { name: "image.png" });
         return interaction.editReply({ content: `🎨 **${prompt}**`, files: [attachment] });
       } catch (err) {
-        console.error("Flux API error:", err?.response?.data || err.message);
+        console.error("Flux (BFL) error, falling back to free Cloudflare Flux:", err?.response?.data || err.message);
+      }
+
+      // Fallback: Flux schnell ฟรีผ่าน Cloudflare Workers AI
+      try {
+        const imgBuffer = await generateImageCloudflareFree(prompt);
+        const attachment = new AttachmentBuilder(imgBuffer, { name: "image.png" });
+        return interaction.editReply({ content: `🎨 **${prompt}** _(free tier)_`, files: [attachment] });
+      } catch (err) {
+        console.error("Cloudflare Flux fallback error:", err?.response?.data || err.message);
         return interaction.editReply("❌ สร้างรูปไม่สำเร็จ ลองใหม่ครับ");
       }
     }
