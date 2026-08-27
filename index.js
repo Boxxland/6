@@ -377,7 +377,7 @@ async function generateImageCloudflareFree(prompt) {
 
   const res = await axios.post(
     `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell`,
-    { prompt, seed: Math.floor(Math.random() * 1e9) },
+    { prompt, steps: 4 }, // schema จริงรับแค่ prompt กับ steps — ห้ามส่ง seed
     { headers: { Authorization: `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" } }
   );
   if (!res.data?.success) throw new Error(`Cloudflare AI error: ${JSON.stringify(res.data?.errors)}`);
