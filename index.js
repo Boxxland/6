@@ -377,7 +377,7 @@ async function generateImageCloudflareFree(prompt) {
 
   const res = await axios.post(
     `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell`,
-    { prompt, steps: 4 }, // schema จริงรับแค่ prompt กับ steps — ห้ามส่ง seed
+    { prompt, steps: 4 },
     { headers: { Authorization: `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" } }
   );
   if (!res.data?.success) throw new Error(`Cloudflare AI error: ${JSON.stringify(res.data?.errors)}`);
@@ -417,6 +417,10 @@ async function askAI(userMessage, historyKey, guildId, attachments = [], retries
         await new Promise((r) => setTimeout(r, 1500));
         continue;
       }
+      if (err?.status === 429 || /RESOURCE_EXHAUSTED|rate.?limit/i.test(err?.message || "")) {
+        console.log("⚠️ Gemini rate limit hit — ตอบข้อความแจ้งผู้ใช้แทน error ดิบ");
+        return "คุณใช้ Skibidri ประมวลผลเยอะแล้ว รออีก 1-10 นาทีเพื่อกลับมาใช้ใหม่!";
+      }
       throw err;
     }
   }
@@ -430,6 +434,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -509,9 +514,15 @@ async function startVoiceSession(ctx, voiceChannel) {
   connection.once(VoiceConnectionStatus.Ready, () => {
     console.log("✅ Voice connection Ready! เริ่มดักเสียง...");
     const receiver = connection.receiver;
-    receiver.speaking.on("start", (userId) => {
-      const member = ctx.guild.members.cache.get(userId);
-      if (!member || member.user.bot) return;
+    receiver.speaking.on("start", async (userId) => {
+      let member = ctx.guild.members.cache.get(userId);
+      if (!member) {
+        try { member = await ctx.guild.members.fetch(userId); } catch (err) {
+          console.error(`⚠️ fetch member ${userId} ไม่สำเร็จ:`, err.message);
+          return;
+        }
+      }
+      if (member.user.bot) return;
       console.log(`🎤 ${member.user.tag} กำลังพูด...`);
 
       const audioStream = receiver.subscribe(userId, {
