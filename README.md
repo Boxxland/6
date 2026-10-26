@@ -1,3 +1,8 @@
+please open in the code README.md
+
+
+
+
 **Skibidri AI**
 this repo is skibidri AI Claude is developers me is owner this AI can work but is Thai language and this AI can chat you on the discord (Discord bot) you can use (pls don’t jailbreak is just AI)
 report Boxxland if you see skibidri can make exploit and how to use
