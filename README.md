@@ -1,4 +1,4 @@
-please open in the code README.md
+please open in the code mode for good text :P
 
 
 
